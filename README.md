@@ -1,2 +1,2 @@
 # register-coap
-Register Your Service with Vulcan after it passes CoAP Haealthchecks
+Register Your Service with Vulcan after it passes COAP Haealthchecks

@@ -1,0 +1,189 @@
+package main
+
+import (
+	"fmt"
+	"log"
+	"net/url"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/codegangsta/cli"
+	"github.com/coreos/go-semver/semver"
+	"github.com/fatih/color"
+	"github.com/octoblu/register-coap/healthchecker"
+	"github.com/octoblu/register-coap/vctl"
+	De "github.com/tj/go-debug"
+)
+
+var debug = De.Debug("register-coap:main")
+
+func main() {
+	app := cli.NewApp()
+	app.Name = "register-coap"
+	app.Version = version()
+	app.Action = run
+	app.Flags = []cli.Flag{
+		cli.StringFlag{
+			Name:   "backend-id, b",
+			EnvVar: "REGISTER_COAP_BACKEND_ID",
+			Usage:  "Backend id to register server to",
+		},
+		cli.StringFlag{
+			Name:   "server-id, s",
+			EnvVar: "REGISTER_COAP_SERVER_ID",
+			Usage:  "Server ID",
+		},
+		cli.StringFlag{
+			Name:   "uri, u",
+			EnvVar: "REGISTER_COAP_URI",
+			Usage:  "URI to healthcheck, must return status 200",
+		},
+		cli.StringFlag{
+			Name:   "vulcan-uri, V",
+			EnvVar: "REGISTER_COAP_VULCAN_URI",
+			Usage:  "VULCAN URI to register server to",
+		},
+	}
+	app.Run(os.Args)
+}
+
+func run(context *cli.Context) {
+	vulcanURI, serverID, backendID, uri := getOpts(context)
+
+	control := make(chan bool)
+	go loop(vulcanURI, serverID, backendID, uri, control)
+	go iterate(control)
+
+	sigTerm := make(chan os.Signal)
+	signal.Notify(sigTerm, syscall.SIGTERM)
+
+	sigHup := make(chan os.Signal)
+	signal.Notify(sigHup, syscall.SIGHUP)
+
+	go func() {
+		for {
+			<-sigHup
+			fmt.Println("SIGHUP received, deregistering")
+			control <- false
+			onNotHealthy(vulcanURI, serverID, backendID)
+			fmt.Println("deregistered, paused for 5 seconds")
+			time.Sleep(5 * time.Second)
+			go loop(vulcanURI, serverID, backendID, uri, control)
+		}
+	}()
+
+	<-sigTerm
+	fmt.Println("SIGTERM received, cleaning up")
+	control <- false
+	onNotHealthy(vulcanURI, serverID, backendID)
+	os.Exit(0)
+}
+
+func loop(vulcanURI, serverID, backendID, uri string, control <-chan bool) {
+	for {
+		if !<-control {
+			return
+		}
+		healthcheck(vulcanURI, serverID, backendID, uri)
+	}
+}
+
+func iterate(control chan<- bool) {
+	for {
+		control <- true
+		time.Sleep(5 * time.Second)
+	}
+}
+
+func healthcheck(vulcanURI, serverID, backendID, uri string) {
+	if healthchecker.Healthy(uri) {
+		onHealthy(vulcanURI, serverID, backendID, uri)
+	} else {
+		onNotHealthy(vulcanURI, serverID, backendID)
+	}
+}
+
+func onHealthy(vulcanURI, serverID, backendID, uri string) {
+	debug("onHealthy")
+
+	vctlClient, err := vctl.New(vulcanURI)
+	FatalIfError("vctl.New vulcanURI", err)
+
+	err = vctlClient.ServerUpsert(serverID, backendID, uri)
+	FatalIfError("vctlClient.ServerUpsert", err)
+}
+
+func onNotHealthy(vulcanURI, serverID, backendID string) {
+	debug("onNotHealthy")
+
+	vctlClient, err := vctl.New(vulcanURI)
+	FatalIfError("vctl.New vulcanURI", err)
+
+	err = vctlClient.ServerRm(serverID, backendID)
+	FatalIfError("vctlClient.ServerRm", err)
+}
+
+func getOpts(context *cli.Context) (string, string, string, string) {
+	backendID := context.String("backend-id")
+	serverID := context.String("server-id")
+	vulcanURI := context.String("vulcan-uri")
+	uri := context.String("uri")
+
+	if backendID == "" || serverID == "" || vulcanURI == "" || uri == "" {
+		cli.ShowAppHelp(context)
+
+		if backendID == "" {
+			color.Red("  Missing required flag --backend-id or REGISTER_COAP_BACKEND_ID")
+		}
+		if serverID == "" {
+			color.Red("  Missing required flag --server-id or REGISTER_COAP_SERVER_ID")
+		}
+		if uri == "" {
+			color.Red("  Missing required flag --uri or REGISTER_COAP_URI")
+		}
+		if vulcanURI == "" {
+			color.Red("  Missing required flag --vulcan-uri or REGISTER_COAP_VULCAN_URI")
+		}
+		os.Exit(1)
+	}
+
+	validateURI(vulcanURI)
+
+	return vulcanURI, serverID, backendID, uri
+}
+
+func validateURI(uriStr string) {
+	uri, err := url.Parse(uriStr)
+	FatalIfError(fmt.Sprintf("Failed to parse uri: %v", uriStr), err)
+
+	if uri.Scheme == "" {
+		log.Fatalf("uri protocol is required: %v\n", uriStr)
+	}
+
+	parts := strings.Split(uri.Host, ":")
+
+	if len(parts) != 2 || parts[1] == "" {
+		log.Fatalf("uri must contain a port: %v\n", uriStr)
+	}
+}
+
+func version() string {
+	version, err := semver.NewVersion(VERSION)
+	if err != nil {
+		errorMessage := fmt.Sprintf("Error with version number: %v", VERSION)
+		log.Panicln(errorMessage, err.Error())
+	}
+	return version.String()
+}
+
+// FatalIfError prints error and dies if error is non nil
+func FatalIfError(msg string, err error) {
+	if err == nil {
+		return
+	}
+
+	log.Fatalf("ERROR(%v):\n\n%v", msg, err)
+}
