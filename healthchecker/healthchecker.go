@@ -24,10 +24,16 @@ func Healthy(uriStr string) bool {
 	request.SetPathString("healthcheck")
 
 	client, err := coap.Dial("udp", uri.Host)
-	fatalIfError("Error on coap.Dial", err)
+	logIfError("Error on coap.Dial", err)
+	if err != nil {
+		return false
+	}
 
 	response, err := client.Send(request)
-	fatalIfError("Error on client.Send", err)
+	logIfError("Error on client.Send", err)
+	if err != nil {
+		return false
+	}
 
 	return response.Code == coap.Content
 }
@@ -38,4 +44,12 @@ func fatalIfError(msg string, err error) {
 	}
 
 	log.Fatalln(msg, err.Error())
+}
+
+func logIfError(msg string, err error) {
+	if err == nil {
+		return
+	}
+
+	log.Println(msg, err.Error())
 }
