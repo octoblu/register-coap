@@ -1,9 +1,9 @@
 package healthchecker
 
 import (
-	"fmt"
 	"log"
 	"math/rand"
+	"net/url"
 
 	"github.com/dustin/go-coap"
 )
@@ -11,6 +11,9 @@ import (
 // Healthy returns true if the CoAP request
 // succeeds, false otherwise
 func Healthy(uriStr string) bool {
+	uri, err := url.Parse(uriStr)
+	fatalIfError("Error parsing uri", err)
+
 	messageID := uint16(rand.Int() / 2)
 
 	request := coap.Message{
@@ -20,16 +23,19 @@ func Healthy(uriStr string) bool {
 	}
 	request.SetPathString("healthcheck")
 
-	client, err := coap.Dial("udp", uriStr)
-	if err != nil {
-		log.Fatalln("Error on coap.Dial", err.Error())
-	}
+	client, err := coap.Dial("udp", uri.Host)
+	fatalIfError("Error on coap.Dial", err)
 
 	response, err := client.Send(request)
-	if err != nil {
-		log.Fatalln("Error on client.Send", err.Error())
+	fatalIfError("Error on client.Send", err)
+
+	return response.Code == coap.Content
+}
+
+func fatalIfError(msg string, err error) {
+	if err == nil {
+		return
 	}
 
-	fmt.Println("response", response.Code)
-	return response.Code == coap.Content
+	log.Fatalln(msg, err.Error())
 }

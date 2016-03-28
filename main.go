@@ -150,6 +150,7 @@ func getOpts(context *cli.Context) (string, string, string, string) {
 		os.Exit(1)
 	}
 
+	validateURI(uri)
 	validateURI(vulcanURI)
 
 	return vulcanURI, serverID, backendID, uri
